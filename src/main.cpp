@@ -41,6 +41,15 @@ double polyeval(Eigen::VectorXd coeffs, double x) {
   return result;
 }
 
+// Derivative of a polynomial.
+double polyderiv(Eigen::VectorXd coeffs, double x) {
+  double result = 0.0;
+  for (int i = 1; i < coeffs.size(); i++) {
+    result += i * coeffs[i] * pow(x, i-1);
+  }
+  return result;
+}
+
 // Fit a polynomial.
 // Adapted from
 // https://github.com/JuliaMath/Polynomials.jl/blob/master/src/Polynomials.jl#L676-L716
@@ -77,7 +86,7 @@ int main() {
     // The 4 signifies a websocket message
     // The 2 signifies a websocket event
     string sdata = string(data).substr(0, length);
-    cout << sdata << endl;
+    //cout << sdata << endl;
     if (sdata.size() > 2 && sdata[0] == '4' && sdata[1] == '2') {
       string s = hasData(sdata);
       if (s != "") {
@@ -92,14 +101,51 @@ int main() {
           double psi = j[1]["psi"];
           double v = j[1]["speed"];
 
+          double delta = j[1]["steering_angle"];
+          double a = j[1]["throttle"];
+
           /*
           * TODO: Calculate steeering angle and throttle using MPC.
           *
           * Both are in between [-1, 1].
           *
           */
-          double steer_value;
-          double throttle_value;
+          // From map's coordinate system to vehicle's coordinate system
+          Eigen::VectorXd ptsx_eigen(ptsx.size());
+          Eigen::VectorXd ptsy_eigen(ptsy.size());
+          
+          for (int i = 0 ; i < ptsx.size() ; i++){
+            //traslation transform
+            double x = ptsx[i] - px;
+            double y = ptsy[i] - py;
+
+            //rotation transform
+            ptsx[i] = ptsx_eigen[i] =  x*cos(psi) + y*sin(psi);
+            ptsy[i] = ptsy_eigen[i] = -x*sin(psi) + y*cos(psi);
+          }
+
+          // Fit the waypoints to a 3rd order polynomial 
+          auto coeffs = polyfit(ptsx_eigen, ptsy_eigen, 3);
+
+          // Cross track error 
+          // is calculated by evaluating the polynomial at 0, as it's in reference to the vehicle's coordinate system 
+          double cte = polyeval(coeffs, 0);
+        
+          // Orientation Error
+          // As the coeff are related to the vehicle's coordinate system the psi of the vehicle is 0  
+          double epsi = 0 - atan(polyderiv(coeffs, 0));
+
+          // Create the state vetor
+          Eigen::VectorXd state(8);
+          state << 0, 0, 0, v, cte, epsi, delta, a;
+
+          // Calculate steeering angle and throttle using MPC.
+          auto actuators = mpc.Solve(state, coeffs);
+          size_t N = (actuators.size() - 2 ) / 2;
+
+
+          double steer_value = -actuators[0] / deg2rad(25);
+          double throttle_value = actuators[1]; 
 
           json msgJson;
           // NOTE: Remember to divide by deg2rad(25) before you send the steering value back.
@@ -108,18 +154,18 @@ int main() {
           msgJson["throttle"] = throttle_value;
 
           //Display the MPC predicted trajectory 
-          vector<double> mpc_x_vals;
-          vector<double> mpc_y_vals;
+          vector<double> mpc_x_vals(actuators.begin() + 2, actuators.begin() + 2 + N);
+          vector<double> mpc_y_vals(actuators.begin() + 2 + N, actuators.end());;
 
           //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
           // the points in the simulator are connected by a Green line
 
           msgJson["mpc_x"] = mpc_x_vals;
-          msgJson["mpc_y"] = mpc_y_vals;
+          msgJson["mpc_y"] = mpc_y_vals; 
 
           //Display the waypoints/reference line
-          vector<double> next_x_vals;
-          vector<double> next_y_vals;
+          vector<double> next_x_vals = ptsx;
+          vector<double> next_y_vals = ptsy;
 
           //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
           // the points in the simulator are connected by a Yellow line
@@ -129,7 +175,7 @@ int main() {
 
 
           auto msg = "42[\"steer\"," + msgJson.dump() + "]";
-          std::cout << msg << std::endl;
+          //std::cout << msg << std::endl;
           // Latency
           // The purpose is to mimic real driving conditions where
           // the car does actuate the commands instantly.
